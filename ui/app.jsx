@@ -29,7 +29,7 @@ function App() {
     window.jarvis.snapshot().then(setData);
     return off;
   }, []);
-  useEffect(()=>{if(data?.state==='SUSPENDED')setQuestion('');},[data?.state]);
+  useEffect(()=>{if(data?.state==='SUSPENDED'){setQuestion('');}},[data?.state]);
   useEffect(()=>{setQuestion('');},[data?.conversationVersion]);
   async function action(name, value) {
     setBusy(true); setMessage('');
@@ -42,7 +42,7 @@ function App() {
   const deviceKey = d => JSON.stringify([d.name, d.hostapi]);
   const selected = data.settings.device ? deviceKey(data.settings.device) : '';
   const known = data.devices.some(d => deviceKey(d) === selected);
-  const working=['ACTIVATED','PREPARING_INPUT','CAPTURING','TRANSCRIBING','THINKING','WEATHER','CALENDAR','SPEAKING','TIMER_ALERT'].includes(data.state);
+  const working=['ACTIVATED','PREPARING_INPUT','CAPTURING','TRANSCRIBING','THINKING','SEARCHING','WEATHER','CALENDAR','SPEAKING','TIMER_ALERT'].includes(data.state);
   return <main>
     <header><div><span className="eyebrow">LOCAL VOICE ASSISTANT</span><h1>JARVIS<span className="period">.</span></h1></div><button id="settings-toggle" aria-pressed={page==='settings'} onClick={()=>setPage(page==='home'?'settings':'home')}>{page==='home'?'設定':'ホームに戻る'}</button></header>
     {(data.error || message) && <div role="alert" className="error">{message || data.error}{data.error&&<button disabled={busy} onClick={()=>action('retry')}>再試行</button>}</div>}
@@ -60,7 +60,7 @@ function App() {
       <div className="orb"><div /></div>
       <span className="eyebrow">{data.state}</span>
       <h2>{data.label}</h2>
-      <p>{data.state === 'PREPARING_INPUT' ? 'まだ話さずお待ちください。「質問を聞いています」と表示されてから話してください。' : data.state === 'SPEAKING' ? '読み上げ中はマイクを停止しています。途中で停止できます。' : data.state === 'WEATHER' ? '設定した地域の天気を取得しています。途中で取り消せます。' : data.state === 'CALENDAR' ? 'Googleから予定を取得しています。途中で取り消せます。' : data.state === 'THINKING' ? 'このPCで回答を生成しています。初回は時間がかかる場合があります。' : data.state === 'TRANSCRIBING' ? 'PC内で日本語を認識しています。取消できます。' : data.state === 'CAPTURING' ? '質問を話してください。無音で終了します（最大15秒）。' : data.state === 'ACTIVATED' ? '返事が終わったら、質問を話してください。' : data.state === 'LISTENING' ? '「Hey Jarvis」と呼びかけてください。' : data.state === 'SUSPENDED' ? 'ロック解除・スリープ復帰を待っています。' : '文字で質問できます。音声を使う場合は監視を開始してください。'}</p>
+      <p>{data.state === 'PREPARING_INPUT' ? 'まだ話さずお待ちください。「質問を聞いています」と表示されてから話してください。' : data.state === 'SPEAKING' ? '読み上げ中はマイクを停止しています。途中で停止できます。' : data.state === 'SEARCHING' ? 'Web検索・要点の抽出中です。処理を取り消せます。' : data.state === 'WEATHER' ? '設定した地域の天気を取得しています。途中で取り消せます。' : data.state === 'CALENDAR' ? 'Googleから予定を取得しています。途中で取り消せます。' : data.state === 'THINKING' ? 'このPCで回答を生成しています。初回は時間がかかる場合があります。' : data.state === 'TRANSCRIBING' ? 'PC内で日本語を認識しています。取消できます。' : data.state === 'CAPTURING' ? '質問を話してください。無音で終了します（最大15秒）。' : data.state === 'ACTIVATED' ? '返事が終わったら、質問を話してください。' : data.state === 'LISTENING' ? '「Hey Jarvis」と呼びかけてください。' : data.state === 'SUSPENDED' ? 'ロック解除・スリープ復帰を待っています。' : '文字で質問できます。音声を使う場合は監視を開始してください。'}</p>
       {!data.settings.device&&<button onClick={()=>{setCategory('audio');setPage('settings');}}>マイクを設定</button>}
       <button className="primary" disabled={busy || (!enabled && !data.settings.device)}
         onClick={() => action('toggle', !enabled)}>{enabled ? '監視を停止' : '監視を開始'}</button>
@@ -68,13 +68,13 @@ function App() {
       {data.state==='LISTENING' && data.conversation?.length>0 && <button disabled={busy} onClick={()=>action('continue-input')}>続けて話す</button>}
       {working && (data.state==='TIMER_ALERT' ? <button disabled={busy} onClick={()=>action('timer-dismiss')}>通知を閉じる</button> : data.state==='SPEAKING' ? <button disabled={busy} onClick={()=>action('stop-speech')}>読み上げを停止</button> : <button disabled={busy} onClick={()=>action('cancel-input')}>処理を取り消す</button>)}
       <p role="status">{data.inputResult}</p>
-      <small>音声認識・AI回答はPC内、予定・天気は外部サービスから取得します。</small>
+      <small>音声認識・AI処理はPC内。予定・天気・Web検索は外部サービスを利用します。</small>
     </section>
     <section className="panel transcript"><form onSubmit={e=>{e.preventDefault();action('ask-text',question);}}>
       <label htmlFor="question">文字で質問する</label>
       <textarea id="question" value={question} maxLength={2000} rows={3} disabled={busy || working}
         onKeyDown={e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.nativeEvent.isComposing&&question.trim()&&!busy&&!working&&['PAUSED','LISTENING'].includes(data.state)){e.preventDefault();action('ask-text',question);}}} placeholder="質問を入力…（Ctrl＋Enterで送信）" onChange={e=>setQuestion(e.target.value)}/>
-      <div className="row"><small>予定はGoogle、天気はOpen-Meteoへ問い合わせます。</small><button disabled={busy || !question.trim() || !['PAUSED','LISTENING'].includes(data.state)}>質問する</button></div>
+      <div className="row"><small>検索が必要な質問は検索サービスへ送信します。</small><button disabled={busy || !question.trim() || !['PAUSED','LISTENING'].includes(data.state)}>質問する</button></div>
     </form></section>
     <div className="quick-actions">{['今日の予定','次の予定はいつ','今日の天気','3分測って'].map(q=><button key={q} disabled={busy||working||!['PAUSED','LISTENING'].includes(data.state)} onClick={()=>action('ask-text',q)}>{q}</button>)}</div>
     <section hidden={!data.conversation?.length} className="panel transcript">
@@ -95,12 +95,13 @@ function App() {
       {data.answerNotice && <p role="status">{data.answerNotice}</p>}
       {data.speechNotice && <p role="status">{data.speechNotice}</p>}
       {!data.answer && data.answerNotice && data.transcript && <button disabled={busy || working || !['PAUSED','LISTENING'].includes(data.state)} onClick={()=>action('ask-text',data.transcript)}>同じ質問で再試行</button>}
+      {data.answerSources?.length>0&&<div className="sources"><h4>出典・検索結果の抜粋</h4><small>{data.searchMeta?.note}</small><p><small>検索語：{data.searchMeta?.query}<br/>取得：{new Date(data.searchMeta.at).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}（日本時間）</small></p>{data.answerSources.map(source=><div key={source.id}><button className="text-button source-link" onClick={()=>action('search-source',source.id)}>[{source.id}] {source.title} ↗</button><small>{source.url}</small><details><summary>検索結果の抜粋を見る</summary><p>{source.snippet}</p></details></div>)}</div>}
       <small>予定はGoogleの取得結果を表示します。一般のAI回答は誤ることがあります。予定の追加・変更は行いません。</small>
     </section>}
     </div>
     <div hidden={page!=='settings'} className="settings-page">
     {(working||data.timer)&&<div className="panel"><button onClick={()=>setPage('home')}>会話・タイマーに戻る</button>{data.timer&&<b>　{data.timer.status==='finished'?'タイマー終了':remaining(data.timer.remainingMs)}</b>}{working&&<p>{data.label}</p>}</div>}
-    <h2>設定</h2><nav aria-label="設定の分類">{[['audio','音声・起動'],['calendar','カレンダー・通知'],['weather','天気']].map(([key,label])=><button key={key} id={'settings-'+key} aria-pressed={category===key} onClick={()=>setCategory(key)}>{label}</button>)}</nav>
+    <h2>設定</h2><nav aria-label="設定の分類">{[['audio','音声・起動'],['calendar','カレンダー・通知'],['weather','天気'],['search','Web検索']].map(([key,label])=><button key={key} id={'settings-'+key} aria-pressed={category===key} onClick={()=>setCategory(key)}>{label}</button>)}</nav>
     <section hidden={category!=='calendar'} className="panel transcript">
       <div className="row" id="calendar-settings"><h3>Googleカレンダー</h3><b>{data.calendar?.pending?'接続待ち':data.calendar?.connected?'接続済み':'未接続'}</b></div>
       <p>「今日・明日・来週・今月・来月の予定」「次の予定はいつ」に対応します。</p>
@@ -118,6 +119,13 @@ function App() {
       <label htmlFor="reminder-minutes">通知のタイミング</label><select id="reminder-minutes" value={data.settings.reminder_minutes??10} disabled={busy} onChange={e=>action('reminder-minutes',Number(e.target.value))}>{[5,10,15,30,60].map(n=><option key={n} value={n}>{n}分前</option>)}</select>
       <p><small>時刻付き予定が対象。起動中に約1分ごとに確認します。会話・タイマー通知中は待機し、ロック・スリープ中は通知しません。開始済み・終日・辞退した予定は対象外です。通知音・自動読み上げはありません。</small></p>
       <details><summary>初回接続の準備</summary><p>Google CloudでGoogle Calendar APIを有効にし、Google Auth Platformで「デスクトップアプリ」のクライアントを作成します。取得したJSONを上のボタンで選択してください。テスト中のアプリでは、ご自分のGoogleアカウントをテストユーザーに追加します。</p><p>「Googleに接続」を押すとブラウザーが開きます。Google画面で予定の読み取りを許可してください。</p></details>
+    </section>
+    <section hidden={category!=='search'} className="panel transcript">
+      <h3>Web検索</h3><p>DuckDuckGo · APIキー・課金契約不要</p>
+      <label htmlFor="search-mode">検索するタイミング</label><select id="search-mode" value={data.settings.search_mode??'auto'} disabled={busy||working} onChange={e=>action('search-mode',e.target.value)}><option value="auto">自動：最新情報・検索依頼など</option><option value="always">常に検索（予定・天気・タイマーを除く）</option><option value="off">Web検索をオフ</option></select>
+      <p>「最新のニュースを調べて」「○○の料金を検索して」「○○の公式サイトを教えて」のように質問できます。「検索せずに答えて」でPC内の回答を指定できます。</p>
+      <div className="quick-actions"><button onClick={()=>action('search-guide')}>検索サービスについて ↗</button>{data.search?.legacyKeySaved&&<button disabled={busy||working} onClick={()=>action('search-key-clear')}>以前のBraveキーをPCから削除</button>}</div>
+      <small>質問文を検索語としてDuckDuckGoへ送信します。履歴・予定・音声は送りません。要点の抽出はPC内のOllamaで行います。無料の検索ページを利用するため、アクセス制限や仕様変更で取得できない場合があります。Brave APIは使用しません。以前のBrave契約の変更・解約はサービス側で行ってください。</small>
     </section>
     <section hidden={category!=='weather'} className="panel transcript" id="weather-settings">
       <div className="row"><h3>天気予報</h3>{data.settings.weather_location&&<button disabled={busy||working} onClick={()=>action('weather-clear')}>地域を解除</button>}</div>

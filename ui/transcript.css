@@ -3,3 +3,4 @@
 .transcript input[type=text]{width:100%;padding:10px;margin:10px 0;font:inherit;background:#0a1720;color:#e7eff2;border:1px solid #3b525d;border-radius:6px}
 .conversation-history{max-height:320px;overflow:auto;margin-top:12px}.conversation-history>div{padding:10px;border-bottom:1px solid #29414e}.transcript summary{cursor:pointer;margin-top:12px}
 .timer-panel{margin-bottom:18px}.timer-panel h3{margin:0;font-size:15px}.timer-panel p{font-size:13px;line-height:1.7}.timer-clock{display:block;font-size:30px;font-variant-numeric:tabular-nums;margin-top:12px;color:#62e2d4}.timer-finished{border:2px solid #62e2d4;background:#153532}
+.transcript input[type=password]{width:100%;padding:10px;margin:10px 0;font:inherit;background:#0a1720;color:#e7eff2;border:1px solid #3b525d;border-radius:6px}.sources>div{padding:12px 0;border-top:1px solid #344b58}.sources small{display:block;overflow-wrap:anywhere}.source-link{text-align:left;overflow-wrap:anywhere;line-height:1.6}

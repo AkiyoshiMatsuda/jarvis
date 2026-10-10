@@ -13,6 +13,7 @@
 | Pythonライブラリ | requirements-build.lock.txtと各配布物のライセンス | 仮想環境・同梱ワーカーを除外 |
 | Open-Meteo予報データ | [利用条件](https://open-meteo.com/en/terms)、CC BY 4.0、無料APIは非商用向け | 実行時に取得。画面・回答に出典表示 |
 | GeoNames地域データ | [Open-Meteo地域検索API](https://open-meteo.com/en/docs/geocoding-api) | 地域検索時に取得。画面に出典表示 |
+| DuckDuckGoの検索結果 | [公式HTML版の案内](https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript/) | APIキー不要。実行時に取得し、結果は永続保存せず元ページの出典リンクを表示 |
 
 openWakeWordの学習済みモデルには非商用・表示・継承条件があります。GitHub Releasesへモデル入り実行ファイルを添付する場合は、各ライセンス文書・著作権表示・Windows生成音声の配布条件を別途確認してください。今回の確認はバイナリ配布の承認ではありません。
 プロジェクト自身のLICENSEは未設定です。MITなどの再利用許諾は所有者が選択するものであり、依存先のライセンスをプロジェクト全体へ自動適用していません。

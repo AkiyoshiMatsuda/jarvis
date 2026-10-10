@@ -17,6 +17,9 @@ const {parseCalendarCommand,CalendarError}=require('./calendar.cjs');
 const {GoogleCalendar}=require('./google-calendar.cjs');
 const {WeatherService,WeatherError,searchLocations,parseWeatherCommand}=require('./weather.cjs');
 const weather=new WeatherService();
+const {WebSearch,routeSearch,sourceURL,selectEvidence}=require('./web-search.cjs');
+const webSearch=new WebSearch({select:async(q,sources,options)=>{await ensureOllama(options);return selectEvidence(q,sources,options);}});
+let searchCycle,answerSources=[],searchMeta=null;
 const {Reminders}=require('./reminders.cjs');
 let reminders,reminderPoll,reminderRows=[],reminderToast;
 
@@ -50,7 +53,7 @@ const timerService=new TimerService({onChange:()=>publish(),onExpire:timer=>{
 const conversation=new Conversation({onExpire:()=>{
   clearDisplayed();inputResult='10分間操作がなかったため会話を消去しました。';publish();
 }});
-function clearDisplayed() {transcript='';answer='';answerNotice='';speechNotice='';inputResult='';}
+function clearDisplayed() {answerSources=[];searchMeta=null;transcript='';answer='';answerNotice='';speechNotice='';inputResult='';}
 function clearConversation() {conversation.clear();clearDisplayed();}
 const labels = {STARTING:'準備中', LISTENING:'呼びかけを待っています', PAUSED:'監視を停止しています',
   ACTIVATED:'はい、何でしょう？', RECOVERING:'音声監視を復旧しています', SUSPENDED:'ロック・スリープのため停止中', ERROR:'確認が必要です', STOPPING:'終了中'};
@@ -59,6 +62,7 @@ labels.PREPARING_INPUT='マイクを準備しています';
 labels.TRANSCRIBING='文字に変換しています';
 labels.THINKING='AIが回答を考えています';
 labels.CALENDAR='Googleカレンダーの予定を確認しています';
+labels.SEARCHING='Webで情報を検索しています';
 labels.WEATHER='天気予報を確認しています';
 labels.SPEAKING='回答を読み上げています';
 labels.TIMER_ALERT='タイマーの終了をお知らせしています';
@@ -70,7 +74,7 @@ const recovery=new Recovery({allowed,attempt:valid=>restart(valid),status:(next,
   setState(next==='INACTIVE'?(locked||sleeping?'SUSPENDED':'PAUSED'):next);
 }});
 function fault(e) {cancelResponse();epoch=null;++revision;recovery.fail(e);}
-function snapshot() { return {reminderRows,reminderStatus:reminders?.notice??'',state, label:labels[state], weatherCandidates,calendar:calendar?.snapshot(),timer:timerService.snapshot(),timerNotice,timerSoundPending:pendingAlarm!==null,inputResult, transcript, answer, answerNotice, speechNotice, conversation:conversation.context(), conversationVersion:conversation.version, historyTrimmed:conversation.trimmed, aiModel:MODEL, error, devices, settings, count, lastDetection, recoveryAttempt, startupAvailable:app.isPackaged&&!smoke, ready:!!client?.ready}; }
+function snapshot() { return {answerSources,searchMeta,search:{legacyKeySaved:fs.existsSync(path.join(app.getPath('userData'),'search-key.enc'))},reminderRows,reminderStatus:reminders?.notice??'',state, label:labels[state], weatherCandidates,calendar:calendar?.snapshot(),timer:timerService.snapshot(),timerNotice,timerSoundPending:pendingAlarm!==null,inputResult, transcript, answer, answerNotice, speechNotice, conversation:conversation.context(), conversationVersion:conversation.version, historyTrimmed:conversation.trimmed, aiModel:MODEL, error, devices, settings, count, lastDetection, recoveryAttempt, startupAvailable:app.isPackaged&&!smoke, ready:!!client?.ready}; }
 function log(type, data) {
   try {
     const dir = path.join(app.getPath('userData'), 'logs'); fs.mkdirSync(dir, {recursive:true});
@@ -134,7 +138,7 @@ function timerCommand(command) {
 function cancelResponse() {
   cancelAlarm();
   const run=speechRun;speechRun=null;run?.finishWait?.();speechAudio?.cancel();
-  response?.cancel(); responseAudio?.cancel(); questionInput?.cancel(); answerCycle?.cancel();calendarCycle?.cancel();weatherCycle?.cancel(); manualAnswer=null;
+  response?.cancel(); responseAudio?.cancel(); questionInput?.cancel(); answerCycle?.cancel();calendarCycle?.cancel();weatherCycle?.cancel();searchCycle?.cancel(); manualAnswer=null;
 }
 async function readAnswer(text=answer) {
   speechNotice='';
@@ -161,11 +165,16 @@ async function generateAndSpeak(question,{voice=false}={}) {
   if(calendarKind) {if(await calendarCycle.begin(calendarKind))await readAnswer();return;}
   const weatherCommand=parseWeatherCommand(question);
   if(weatherCommand){if(await weatherCycle.begin(weatherCommand))await readAnswer();return;}
+  const decision=routeSearch(question,settings.search_mode);
+  if(decision.search){
+    if(decision.blocked){answerNotice='Web検索はオフです。「設定 → Web検索」で有効にするか、検索せずに答えるよう指定してください。';publish();return;}
+    if(await searchCycle.begin(question))await readAnswer(answer.replace(/\[\d+\]/g,''));return;
+  }
   if(await answerCycle.begin(question))await readAnswer();
 }
 async function answerFromText(question) {
   const run={};manualAnswer=run;
-  transcript=question.trim();answer='';answerNotice='';epoch=null;++revision;setState('THINKING');
+  answerSources=[];searchMeta=null;transcript=question.trim();answer='';answerNotice='';epoch=null;++revision;setState('THINKING');
   try {
     if(client?.ready) await client.request('pause');
     if(manualAnswer!==run || locked || sleeping || quitting)return;
@@ -281,14 +290,30 @@ async function calendarAction(name) {
   } catch(e) {return {ok:false,error:e instanceof CalendarError?e.message:'カレンダー設定を保存できませんでした。ファイルと保存先の権限を確認してください。'};}
   finally{calendarSettingsBusy=false;}
 }
+async function searchAction(name,value) {
+  if(locked||sleeping||quitting)return {ok:false,error:'画面を利用できる状態で操作してください。'};
+  try{
+    if(name==='search-source'){
+      const source=answerSources.find(s=>s.id===value);if(!source||!sourceURL(source.url))throw Error('この回答の出典を選択してください。');
+      await shell.openExternal(source.url);return {ok:true};
+    }
+    if(name==='search-guide'){await shell.openExternal('https://duckduckgo.com/duckduckgo-help-pages/features/non-javascript/');return {ok:true};}
+    if(!['PAUSED','LISTENING','ERROR'].includes(state)||manualAnswer)return {ok:false,error:'現在の処理が終わってから変更してください。'};
+    if(name==='search-key-clear')fs.rmSync(path.join(app.getPath('userData'),'search-key.enc'),{force:true});
+    else if(name==='search-mode'){const next={...settings,search_mode:value};saveSettings(settingsFile,next);settings=next;}
+    else throw Error('不明な検索設定です。');
+    publish();return {ok:true};
+  }catch{return {ok:false,error:'検索設定の保存またはリンクを開く操作を完了できません。入力と保存先の権限を確認してください。'};}
+}
 function act(name, value) {
+  if(typeof name==='string'&&name.startsWith('search-'))return searchAction(name,value);
   if(name==='reminder-dismiss'){reminderRows=[];reminderToast?.close();publish();return Promise.resolve({ok:true});}
   if(typeof name==='string'&&name.startsWith('weather-'))return weatherAction(name,value);
   if(typeof name==='string'&&name.startsWith('calendar-'))return calendarAction(name);
   if(name==='new-conversation') {cancelResponse();clearConversation();epoch=null;++revision;}
   const stoppingSpeech=name==='stop-speech' && !!speechRun;
   if(stoppingSpeech) cancelResponse();
-  const cancelling=name==='cancel-input' && !!(response?.current || answerCycle?.current || calendarCycle?.current || weatherCycle?.current || manualAnswer);
+  const cancelling=name==='cancel-input' && !!(response?.current || answerCycle?.current || calendarCycle?.current || weatherCycle?.current || searchCycle?.current || manualAnswer);
   if(cancelling) cancelResponse();
   // Stop intent takes effect immediately, including during an in-flight resume.
   if (name === 'toggle' && value === false) { settings.monitoring_enabled = false; epoch = null; ++revision; cancelResponse(); recovery.cancel(); }
@@ -326,7 +351,7 @@ function act(name, value) {
       void previewSpeech();
     } else if (name === 'cancel-input') {
       if (!cancelling) return {ok:true};
-      cancelResponse(); transcript='';answer='';answerNotice=''; inputResult='入力・回答を取り消しました。'; await reconcile();
+      cancelResponse();answerSources=[];searchMeta=null; transcript='';answer='';answerNotice=''; inputResult='入力・回答を取り消しました。'; await reconcile();
     } else if (name === 'clear-transcript') {
       if(response?.current || answerCycle?.current || manualAnswer)return {ok:false,error:'処理を取り消してから消去してください。'};
       clearConversation();
@@ -399,6 +424,12 @@ else {
     Promise.resolve(client?.stop()).finally(() => app.exit(0));
   });
   app.whenReady().then(async () => {
+    searchCycle=new AnswerCycle({timeoutMs:95000,timeoutMessage:'検索・要点の抽出が時間内に完了しませんでした。再試行してください。',
+      ask:(question,options)=>webSearch.ask(question,options),
+      started:()=>{answer='';answerSources=[];searchMeta=null;answerNotice='';speechNotice='';inputResult='';setState('SEARCHING');},
+      complete:result=>{answer=result.text;answerSources=result.sources;searchMeta=result.searchMeta;inputResult='出典付きの検索結果を取得しました。';publish();},
+      failed:message=>{answerNotice=message;inputResult='検索結果を確認できませんでした。';publish();}
+    });
     weatherCycle=new AnswerCycle({timeoutMs:20000,timeoutMessage:'天気の取得が時間内に完了しませんでした。再試行してください。',
       ask:(command,options)=>weather.ask(command,settings.weather_location,options),
       started:()=>{answer='';answerNotice='';speechNotice='';inputResult='';setState('WEATHER');},
@@ -459,7 +490,7 @@ else {
     response = new ResponseCycle({
       allowed,
       activate:({greet})=>{
-        inputResult='';transcript='';answer='';answerNotice='';speechNotice='';
+        answerSources=[];searchMeta=null;inputResult='';transcript='';answer='';answerNotice='';speechNotice='';
         epoch=null; ++revision; setState(greet?'ACTIVATED':'PREPARING_INPUT');
         if (!smoke) {win.showInactive(); if (!win.isFocused()) win.flashFrame(true);}
         if(greet)log('response_presented',{detection_to_display_request_ms:performance.now()-detectedAt,hidden_test:smoke});
@@ -528,6 +559,31 @@ else {
       assert.equal(state, 'PAUSED', error);
       assert.ok(devices.length > 0);
       const result = {state, devices:devices.length, error, workerPid:client?.child?.pid};
+      if(process.argv.includes('--search-test')) {
+        const until=async predicate=>{const end=Date.now()+12000;while(!predicate()&&Date.now()<end)await new Promise(r=>setTimeout(r,20));assert.ok(predicate(),'Search integration wait failed');};
+        const originalSettings=settings,originalSearch=webSearch.search,originalSelect=webSearch.select,originalAsk=answerCycle.options.ask;
+        settings={...settings,speech_enabled:false,search_mode:'auto'};
+        answerCycle.options.ask=()=>assert.fail('Search must not fall back to uncited AI');
+        const rows=[{title:'検証用の公式資料',url:'https://example.com/docs',description:'検証用の機能は日本語に対応しています。'}];
+        webSearch.search=async()=>rows;webSearch.select=async()=>[{id:1,quote:rows[0].description}];
+        await act('ask-text','最新の技術を検索して');await until(()=>state==='PAUSED'&&!manualAnswer);
+        assert.match(answer,/\[1\]/);assert.equal(answerSources[0].url,'https://example.com/docs');assert.equal(conversation.messages.length,0);
+        cancelResponse();assert.equal(answerSources.length,1);assert.ok(searchMeta);assert.match(answer,/\[1\]/);
+        assert.equal((await act('search-source',99)).ok,false);
+        win.showInactive();await win.webContents.executeJavaScript("document.querySelector('.sources').scrollIntoView({block:'center'})");await new Promise(r=>setTimeout(r,250));
+        fs.writeFileSync(path.join(app.getPath('userData'),'search-preview.png'),(await win.webContents.capturePage()).toPNG());
+        let release;webSearch.search=()=>new Promise(resolve=>release=resolve);timerService.start(60000);const timerId=timerService.current.id;
+        await act('ask-text','最新ニュースを検索して');await until(()=>state==='SEARCHING'&&!!release);await act('cancel-input');release(rows);await new Promise(r=>setTimeout(r,100));
+        assert.equal(state,'PAUSED');assert.equal(answer,'');assert.equal(answerSources.length,0);assert.equal(timerService.current.id,timerId);stopTimer();
+        await act('search-mode','off');await act('ask-text','最新ニュース');await until(()=>state==='PAUSED'&&!manualAnswer);assert.match(answerNotice,/オフ/);
+        answerCycle.options.ask=async()=>({text:'こんにちは。'});await act('ask-text','こんにちは');await until(()=>state==='PAUSED'&&!manualAnswer);assert.equal(answer,'こんにちは。');
+        await win.webContents.executeJavaScript("document.getElementById('settings-toggle').click();document.getElementById('settings-search').click()");await new Promise(r=>setTimeout(r,200));
+        assert.ok(await win.webContents.executeJavaScript("!document.getElementById('search-key') && document.getElementById('search-mode').getClientRects().length>0"));
+        assert.ok(!JSON.stringify(snapshot()).includes('synthetic-test-token'));
+        assert.ok(!fs.readFileSync(path.join(app.getPath('userData'),'logs/desktop.jsonl'),'utf8').includes('検証用の公式資料'));
+        settings=originalSettings;saveSettings(settingsFile,settings);webSearch.search=originalSearch;webSearch.select=originalSelect;answerCycle.options.ask=originalAsk;clearConversation();publish();
+        result.searchIntegration=true;
+      }
       if(process.argv.includes('--reminder-test')) {
         const originalSettings=settings;
         const js=code=>win.webContents.executeJavaScript(code);
