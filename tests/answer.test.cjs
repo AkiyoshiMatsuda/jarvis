@@ -14,7 +14,7 @@ test('only local model gets question, with no conversation history or tools',asy
   assert.equal(requests[1].body.messages.length,2);
   assert.equal(requests[1].body.messages[1].content,'質問');
   assert.equal(requests[1].body.tools,undefined);
-  assert.equal(requests[1].body.keep_alive,0);
+  assert.equal(requests[1].body.keep_alive,'10m');
   assert.match(requests[1].body.messages[0].content,/文末の問いかけまで、自然な日本語/);
   assert.match(requests[1].body.messages[0].content,/求められていない提案や追加質問を末尾に付けない/);
 });

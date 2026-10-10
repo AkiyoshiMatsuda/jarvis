@@ -19,8 +19,9 @@ class JsonLines {
     if (Buffer.byteLength(this.buffer) > 65536) throw Error('Worker message too large');
   }
 }
-function defaults() { return {version: 1, monitoring_enabled: false, device: null, threshold: .5, cooldown: 2, response_volume: .8, auto_start:false, speech_enabled:true, speech_voice:'',speech_rate:1,weather_location:null,search_mode:'auto',reminders_enabled:false,reminder_minutes:10}; }
+function defaults() { return {version: 1, monitoring_enabled: false, device: null, threshold: .5, cooldown: 2, response_volume: .8, auto_start:false, speech_enabled:true, speech_voice:'',speech_rate:1,weather_location:null,personalization:true,fast_ai:true,search_mode:'auto',reminders_enabled:false,reminder_minutes:10}; }
 function validate(s) {
+  const personalization=s?.personalization??true,fastAI=s?.fast_ai??true;if(typeof personalization!=='boolean'||typeof fastAI!=='boolean')throw Error('Invalid AI settings');
   const searchMode=s?.search_mode??'auto';if(!['auto','always','off'].includes(searchMode))throw Error('Invalid search mode');
   const remindersEnabled=s?.reminders_enabled??false,reminderMinutes=s?.reminder_minutes??10;
   if(typeof remindersEnabled!=='boolean'||![5,10,15,30,60].includes(reminderMinutes))throw Error('Invalid reminder settings');
@@ -38,7 +39,7 @@ function validate(s) {
       !(s.device === null || (typeof s.device?.name === 'string' && typeof s.device?.hostapi === 'string')) ||
       (s.monitoring_enabled && !s.device) || !Number.isFinite(volume) || volume<0 || volume>1) throw Error('Invalid settings');
   return {version: 1, monitoring_enabled: s.monitoring_enabled, device: s.device,
-          threshold: s.threshold, cooldown: s.cooldown, response_volume:volume, auto_start:autoStart, speech_enabled:speechEnabled,speech_voice:speechVoice,speech_rate:speechRate,weather_location:weatherLocation,search_mode:searchMode,reminders_enabled:remindersEnabled,reminder_minutes:reminderMinutes};
+          threshold: s.threshold, cooldown: s.cooldown, response_volume:volume, auto_start:autoStart, speech_enabled:speechEnabled,speech_voice:speechVoice,speech_rate:speechRate,weather_location:weatherLocation,personalization,fast_ai:fastAI,search_mode:searchMode,reminders_enabled:remindersEnabled,reminder_minutes:reminderMinutes};
 }
 function readSettings(file) {
   if (!fs.existsSync(file)) return {settings: defaults(), warning: ''};

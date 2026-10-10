@@ -22,6 +22,8 @@ function App() {
   const [weatherPlace,setWeatherPlace]=useState('');
   const [page,setPage]=useState('home');
   const [category,setCategory]=useState('audio');
+  const [editMemory,setEditMemory]=useState(null);
+  const [confirmForget,setConfirmForget]=useState(false);
   const [voices,setVoices]=useState([]);
   useEffect(()=>{const update=()=>setVoices(localJapaneseVoices(window.speechSynthesis));update();window.speechSynthesis.addEventListener('voiceschanged',update);return ()=>window.speechSynthesis.removeEventListener('voiceschanged',update);},[]);
   useEffect(() => {
@@ -29,7 +31,7 @@ function App() {
     window.jarvis.snapshot().then(setData);
     return off;
   }, []);
-  useEffect(()=>{if(data?.state==='SUSPENDED'){setQuestion('');}},[data?.state]);
+  useEffect(()=>{if(data?.state==='SUSPENDED'){setQuestion('');setEditMemory(null);setConfirmForget(false);}},[data?.state]);
   useEffect(()=>{setQuestion('');},[data?.conversationVersion]);
   async function action(name, value) {
     setBusy(true); setMessage('');
@@ -91,7 +93,7 @@ function App() {
       <p>{data.transcript}</p><small>音声の認識結果には誤りが含まれる場合があります。</small>
     </section>}
     {(data.answer || data.answerNotice) && <section className="panel transcript" aria-live="polite">
-      <h3>JARVISの回答</h3>{data.answer && <p>{data.answer}</p>}
+      <h3>{data.state==='THINKING'?'JARVISの回答（生成中）':'JARVISの回答'}</h3>{data.lastLatency&&<small>最初の文字受信 {data.lastLatency.firstMs===null?'—':(data.lastLatency.firstMs/1000).toFixed(1)+'秒'} ／ 回答完了 {(data.lastLatency.totalMs/1000).toFixed(1)}秒</small>}{data.answer && <p>{data.answer}</p>}
       {data.answerNotice && <p role="status">{data.answerNotice}</p>}
       {data.speechNotice && <p role="status">{data.speechNotice}</p>}
       {!data.answer && data.answerNotice && data.transcript && <button disabled={busy || working || !['PAUSED','LISTENING'].includes(data.state)} onClick={()=>action('ask-text',data.transcript)}>同じ質問で再試行</button>}
@@ -101,7 +103,7 @@ function App() {
     </div>
     <div hidden={page!=='settings'} className="settings-page">
     {(working||data.timer)&&<div className="panel"><button onClick={()=>setPage('home')}>会話・タイマーに戻る</button>{data.timer&&<b>　{data.timer.status==='finished'?'タイマー終了':remaining(data.timer.remainingMs)}</b>}{working&&<p>{data.label}</p>}</div>}
-    <h2>設定</h2><nav aria-label="設定の分類">{[['audio','音声・起動'],['calendar','カレンダー・通知'],['weather','天気'],['search','Web検索']].map(([key,label])=><button key={key} id={'settings-'+key} aria-pressed={category===key} onClick={()=>setCategory(key)}>{label}</button>)}</nav>
+    <h2>設定</h2><nav aria-label="設定の分類">{[['audio','音声・起動'],['calendar','カレンダー・通知'],['weather','天気'],['search','Web検索'],['memory','記憶・高速化']].map(([key,label])=><button key={key} id={'settings-'+key} aria-pressed={category===key} onClick={()=>setCategory(key)}>{label}</button>)}</nav>
     <section hidden={category!=='calendar'} className="panel transcript">
       <div className="row" id="calendar-settings"><h3>Googleカレンダー</h3><b>{data.calendar?.pending?'接続待ち':data.calendar?.connected?'接続済み':'未接続'}</b></div>
       <p>「今日・明日・来週・今月・来月の予定」「次の予定はいつ」に対応します。</p>
@@ -119,6 +121,20 @@ function App() {
       <label htmlFor="reminder-minutes">通知のタイミング</label><select id="reminder-minutes" value={data.settings.reminder_minutes??10} disabled={busy} onChange={e=>action('reminder-minutes',Number(e.target.value))}>{[5,10,15,30,60].map(n=><option key={n} value={n}>{n}分前</option>)}</select>
       <p><small>時刻付き予定が対象。起動中に約1分ごとに確認します。会話・タイマー通知中は待機し、ロック・スリープ中は通知しません。開始済み・終日・辞退した予定は対象外です。通知音・自動読み上げはありません。</small></p>
       <details><summary>初回接続の準備</summary><p>Google CloudでGoogle Calendar APIを有効にし、Google Auth Platformで「デスクトップアプリ」のクライアントを作成します。取得したJSONを上のボタンで選択してください。テスト中のアプリでは、ご自分のGoogleアカウントをテストユーザーに追加します。</p><p>「Googleに接続」を押すとブラウザーが開きます。Google画面で予定の読み取りを許可してください。</p></details>
+    </section>
+    <section hidden={category!=='memory'} className="panel transcript">
+      <h3>記憶・高速化</h3>
+      <label className="startup"><input type="checkbox" checked={data.settings.personalization??true} disabled={busy||working} onChange={e=>action('memory-enabled',e.target.checked)}/> 会話から自動で覚え、回答に反映する</label>
+      <p><small>PC内のOllamaが好み・興味などを選び、暗号化して保存します。回答後の待機中に整理し、新しい入力を優先します。検索・予定の取得結果は記憶しません。オフにしても保存済みの記憶は残ります。</small></p>
+      <label className="startup"><input type="checkbox" checked={data.settings.fast_ai??true} disabled={busy||working} onChange={e=>action('memory-fast',e.target.checked)}/> 高速応答：AIモデルを10分間保持する</label>
+      <p><small>RAM・VRAMを使用して次の回答の読み込み待ちを減らします。オフは次の処理終了時に解放します。回答は生成途中から表示し、読み上げは文章の確定後に行います。</small></p>
+      <p role="status">{data.memory?.working?'記憶を整理しています…':data.memory?.notice}</p>
+      <div className="row"><h4>覚えていること（{data.memory?.items?.length??0}/100）</h4><button disabled={busy||working} onClick={()=>setConfirmForget(true)}>すべて削除</button></div>
+      {confirmForget&&<div role="alert"><p>保存した記憶をすべて削除します。元に戻せません。</p><button disabled={busy||working} onClick={()=>{action('memory-clear');setConfirmForget(false);}}>削除する</button><button onClick={()=>setConfirmForget(false)}>やめる</button></div>}
+      {!data.memory?.items?.length&&<p>まだ記憶はありません。「回答は短めが好き、覚えて」のように指定もできます。</p>}
+      {data.memory?.items?.map(row=><div key={row.id} className="memory-row"><p>{row.text}</p><small>{row.status==='active'?'使用中':row.status==='archived'?'自動整理で無効化':'期限切れ'} · {row.origin==='auto'?'自動':'手動'} · 更新 {new Date(row.updated).toLocaleDateString('ja-JP')} · 期限 {new Date(row.expires).toLocaleDateString('ja-JP')}</small><div className="quick-actions"><button disabled={busy||working} onClick={()=>setEditMemory({id:row.id,text:row.text})}>修正・再有効化</button><button disabled={busy||working} onClick={()=>action('memory-delete',row.id)}>削除</button></div></div>)}
+      {editMemory&&<form onSubmit={e=>{e.preventDefault();action('memory-edit',editMemory);setEditMemory(null);}}><label htmlFor="memory-text">記憶の修正</label><input id="memory-text" type="text" maxLength={240} value={editMemory.text} onChange={e=>setEditMemory({...editMemory,text:e.target.value})}/><button disabled={busy||working||!editMemory.text.trim()}>保存</button><button type="button" onClick={()=>setEditMemory(null)}>取消</button></form>}
+      <p><small>「○○を忘れて」「記憶をすべて忘れて」でも削除できます。記憶の削除・修正時は短期会話履歴も消去します。自動判定に誤りがあればここで修正してください。</small></p>
     </section>
     <section hidden={category!=='search'} className="panel transcript">
       <h3>Web検索</h3><p>DuckDuckGo · APIキー・課金契約不要</p>

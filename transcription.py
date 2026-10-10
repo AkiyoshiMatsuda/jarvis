@@ -27,13 +27,14 @@ def verify_model(root):
     return root / manifest['name']
 
 
-def recognize(pcm, root=None):
+def recognize(pcm, root=None, model=None):
     if not pcm or len(pcm) > MAX_PCM or len(pcm) % 2:
         raise ValueError('Invalid PCM length')
     from vosk import Model, KaldiRecognizer, SetLogLevel
     SetLogLevel(-1)
-    folder = verify_model(root or Path(__file__).resolve().parent / 'models')
-    model = Model(str(folder))
+    if model is None:
+        folder = verify_model(root or Path(__file__).resolve().parent / 'models')
+        model = Model(str(folder))
     recognizer = KaldiRecognizer(model, 16000)
     texts = []
     for offset in range(0, len(pcm), 8000):
@@ -63,7 +64,7 @@ def child_main():
     print(json.dumps(result), flush=True)
 
 
-class TranscriptionJob:
+class DisposableTranscriptionJob:
     def __init__(self, pcm, command=None, timeout=45):
         if len(pcm) > MAX_PCM:
             raise ValueError('Audio too long')
@@ -100,3 +101,129 @@ class TranscriptionJob:
         if self.process.poll() is None:
             self.process.kill()
         self.thread.join(timeout=3)
+
+
+_pool_process = None
+_pool_lock = threading.Lock()
+
+
+def shutdown_transcription():
+    global _pool_process
+    process = _pool_process
+    _pool_process = None
+    if process is not None:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        for pipe in (process.stdin, process.stdout):
+            if pipe:
+                pipe.close()
+
+
+def server_main():
+    """Reuse verified model only; recognizer and PCM are per request."""
+    import struct
+    import psutil
+    from vosk import Model, SetLogLevel
+    parent = psutil.Process(os.getppid())
+    touched = [time.monotonic()]
+    busy = [True]
+    def watch():
+        while True:
+            try:
+                if not parent.is_running() or (not busy[0] and time.monotonic()-touched[0] > 600):
+                    os._exit(0)
+            except psutil.Error:
+                os._exit(0)
+            time.sleep(.2)
+    threading.Thread(target=watch, daemon=True).start()
+    SetLogLevel(-1)
+    model = Model(str(verify_model(Path(__file__).resolve().parent / 'models')))
+    while True:
+        busy[0] = False
+        header = sys.stdin.buffer.read(4)
+        if not header:
+            return
+        busy[0] = True
+        if len(header) != 4:
+            return
+        size = struct.unpack('<I', header)[0]
+        if not 0 < size <= MAX_PCM or size % 2:
+            return
+        pcm = sys.stdin.buffer.read(size)
+        if len(pcm) != size:
+            return
+        try:
+            result = {'text': recognize(pcm, model=model)}
+        except Exception:
+            result = {'error': '文字起こしに失敗しました。再度お試しください。'}
+        del pcm
+        print(json.dumps(result), flush=True)
+        del result
+        touched[0] = time.monotonic()
+
+
+class TranscriptionJob(DisposableTranscriptionJob):
+    def cancel(self):
+        global _pool_process
+        super().cancel()
+        self.process.wait(timeout=5)
+        if not self.thread.is_alive():
+            for pipe in (self.process.stdin, self.process.stdout):
+                if pipe:
+                    pipe.close()
+        if _pool_process is self.process:
+            _pool_process = None
+
+    def __init__(self, pcm, command=None, timeout=45):
+        if command is not None:
+            super().__init__(pcm, command, timeout)
+            return
+        import struct
+        global _pool_process
+        if not pcm or len(pcm) > MAX_PCM or len(pcm) % 2:
+            raise ValueError('Invalid PCM length')
+        if not _pool_lock.acquire(blocking=False):
+            raise RuntimeError('Transcription already active')
+        try:
+            if _pool_process is None or _pool_process.poll() is not None:
+                shutdown_transcription()
+                args = ([sys.executable, '--transcribe-server'] if getattr(sys, 'frozen', False)
+                        else [sys.executable, '-u', str(Path(__file__).with_name('jarvis_worker.py')), '--transcribe-server'])
+                _pool_process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            self.process = _pool_process
+            self.results = queue.Queue(maxsize=1)
+            def run():
+                def timeout_kill():
+                    if self.process.poll() is None:
+                        self.process.kill()
+                timer = threading.Timer(timeout, timeout_kill)
+                timer.daemon = True
+                timer.start()
+                try:
+                    self.process.stdin.write(struct.pack('<I', len(pcm)))
+                    self.process.stdin.write(pcm)
+                    self.process.stdin.flush()
+                    out = self.process.stdout.readline(65537)
+                    result = json.loads(out)
+                    if not isinstance(result, dict) or not isinstance(result.get('text', ''), str):
+                        raise ValueError('Invalid STT response')
+                    result = {'text': result['text'][:4000]} if 'text' in result else {'error': '文字起こしに失敗しました。'}
+                except Exception:
+                    timeout_kill()
+                    self.process.wait(timeout=5)
+                    result = {'error': '文字起こしを完了できませんでした。再度お試しください。'}
+                finally:
+                    timer.cancel()
+                    _pool_lock.release()
+                self.results.put(result)
+            self.thread = threading.Thread(target=run, daemon=True)
+            self.thread.start()
+        except Exception:
+            _pool_lock.release()
+            raise
+
+
+import atexit
+atexit.register(shutdown_transcription)

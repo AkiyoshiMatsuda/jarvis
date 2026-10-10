@@ -73,6 +73,7 @@ exports/
 # Editor / OS files
 reminder-seen.json*
 search-key.enc*
+personal-memory.enc*
 .idea/
 .vscode/
 .DS_Store

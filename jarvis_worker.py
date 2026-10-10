@@ -10,7 +10,7 @@ import uuid
 
 from jarvis_probe import Frames, Gate, load_model
 from question_audio import QuestionAudio
-from transcription import TranscriptionJob, child_main
+from transcription import TranscriptionJob, child_main, server_main, shutdown_transcription
 
 MAX_LINE = 8192
 
@@ -246,9 +246,13 @@ def main():
                          processing_ms=(time.perf_counter() - before) * 1000)
     finally:
         stop()
+        shutdown_transcription()
 
 
 if __name__ == '__main__':
+    if '--transcribe-server' in sys.argv:
+        server_main()
+        sys.exit(0)
     if '--transcribe' in sys.argv:
         child_main()
         sys.exit(0)
