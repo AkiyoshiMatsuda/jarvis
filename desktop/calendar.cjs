@@ -63,12 +63,12 @@ function formatCalendar(range,events) {
     `${range.label}のメインカレンダーは${items.length}件です。（日本時間${range.week?'・月曜から日曜':''}）\n対象期間：${dateOnly(range.timeMin)}〜${dateOnly(new Date(Date.parse(range.timeMax)-1).toISOString())}`;
   return {text:heading+'\n'+lines.join('\n')+(items.length>50?'\n表示・読み上げは先頭50件です。残りはGoogleカレンダーで確認してください。':'' )};
 }
-async function fetchCalendar(kind,{accessToken,signal,request=googleJSON,now=new Date()}={}) {
-  const range=calendarRange(kind,now),events=[];let pageToken;
+async function fetchCalendar(kind,{accessToken,signal,request=googleJSON,now=new Date(),raw=false}={}) {
+  const range=raw?{timeMin:now.toISOString(),timeMax:new Date(now.getTime()+86400000).toISOString()}:calendarRange(kind,now),events=[];let pageToken;
   for(let page=0;page<20;page++) {
     signal?.throwIfAborted();
     const query=new URLSearchParams({timeMin:range.timeMin,timeMax:range.timeMax,singleEvents:'true',orderBy:'startTime',showDeleted:'false',maxResults:'250',timeZone:'Asia/Tokyo',
-      fields:'items(summary,start,end,status,attendees(self,responseStatus)),nextPageToken',...(pageToken?{pageToken}:{})});
+      fields:'items(id,summary,start,end,status,attendees(self,responseStatus)),nextPageToken',...(pageToken?{pageToken}:{})});
     const data=await request('https://www.googleapis.com/calendar/v3/calendars/primary/events?'+query,{token:accessToken,signal});
     if(!Array.isArray(data.items)&&data.items!==undefined)throw new CalendarError('予定一覧を読み取れませんでした。');
     events.push(...(data.items??[]));pageToken=data.nextPageToken;
@@ -77,7 +77,7 @@ async function fetchCalendar(kind,{accessToken,signal,request=googleJSON,now=new
       // Google returns start-time order. Read across page boundaries to keep simultaneous events.
       if(future.length && events.some(e=>startsAt(e)>startsAt(future[0])))return formatCalendar(range,events);
     }
-    if(!pageToken)return formatCalendar(range,events);
+    if(!pageToken)return raw?events:formatCalendar(range,events);
   }
   throw new CalendarError('予定が多すぎるため全件を確認できませんでした。今日または明日の予定を指定してください。');
 }

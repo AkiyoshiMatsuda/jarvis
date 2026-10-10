@@ -71,6 +71,7 @@ backups/
 exports/
 
 # Editor / OS files
+reminder-seen.json*
 .idea/
 .vscode/
 .DS_Store

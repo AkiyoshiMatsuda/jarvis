@@ -74,12 +74,12 @@ class GoogleCalendar {
     this.cancel();const token=this.data.refreshToken;this.save({client:this.data.client});this.message='このPCの接続を解除しました。';this.onChange();
     if(token)try{await this.request('https://oauth2.googleapis.com/revoke',{form:{token}});}catch{this.message='このPCの接続は解除しました。Google側の権限解除はGoogleアカウントの接続一覧で行ってください。';this.onChange();}
   }
-  async ask(kind,{signal}={}) {
+  async ask(kind,{signal,raw=false}={}) {
     if(!this.data.refreshToken)throw new CalendarError('Googleカレンダーに未接続です。画面の「Googleカレンダー」から接続してください。');
     const tokens=await this.request('https://oauth2.googleapis.com/token',{form:{...this.data.client,refresh_token:this.data.refreshToken,grant_type:'refresh_token'},signal});
     signal?.throwIfAborted();
     if(typeof tokens.access_token!=='string'||!tokens.access_token)throw new CalendarError('Googleの認証を更新できませんでした。接続し直してください。');
-    return fetchCalendar(kind,{accessToken:tokens.access_token,signal,request:this.request});
+    return fetchCalendar(kind,{accessToken:tokens.access_token,signal,request:this.request,raw});
   }
 }
 module.exports={parseClient,authorize,GoogleCalendar};

@@ -19,12 +19,15 @@ class JsonLines {
     if (Buffer.byteLength(this.buffer) > 65536) throw Error('Worker message too large');
   }
 }
-function defaults() { return {version: 1, monitoring_enabled: false, device: null, threshold: .5, cooldown: 2, response_volume: .8, auto_start:false, speech_enabled:true, speech_voice:'',speech_rate:1}; }
+function defaults() { return {version: 1, monitoring_enabled: false, device: null, threshold: .5, cooldown: 2, response_volume: .8, auto_start:false, speech_enabled:true, speech_voice:'',speech_rate:1,weather_location:null,reminders_enabled:false,reminder_minutes:10}; }
 function validate(s) {
+  const remindersEnabled=s?.reminders_enabled??false,reminderMinutes=s?.reminder_minutes??10;
+  if(typeof remindersEnabled!=='boolean'||![5,10,15,30,60].includes(reminderMinutes))throw Error('Invalid reminder settings');
   const volume=s?.response_volume ?? .8;
   const autoStart=s?.auto_start ?? false;
   const speechEnabled=s?.speech_enabled ?? true;
   const speechVoice=s?.speech_voice??'',speechRate=s?.speech_rate??1;
+  const weatherLocation=require('./weather.cjs').validateLocation(s?.weather_location??null);
   if(typeof speechVoice!=='string'||speechVoice.length>512||!Number.isFinite(speechRate)||speechRate<.8||speechRate>1.2)throw Error('Invalid speech voice/rate');
   if(typeof speechEnabled!=='boolean') throw Error('Invalid speech setting');
   if(typeof autoStart!=='boolean') throw Error('Invalid startup setting');
@@ -34,7 +37,7 @@ function validate(s) {
       !(s.device === null || (typeof s.device?.name === 'string' && typeof s.device?.hostapi === 'string')) ||
       (s.monitoring_enabled && !s.device) || !Number.isFinite(volume) || volume<0 || volume>1) throw Error('Invalid settings');
   return {version: 1, monitoring_enabled: s.monitoring_enabled, device: s.device,
-          threshold: s.threshold, cooldown: s.cooldown, response_volume:volume, auto_start:autoStart, speech_enabled:speechEnabled,speech_voice:speechVoice,speech_rate:speechRate};
+          threshold: s.threshold, cooldown: s.cooldown, response_volume:volume, auto_start:autoStart, speech_enabled:speechEnabled,speech_voice:speechVoice,speech_rate:speechRate,weather_location:weatherLocation,reminders_enabled:remindersEnabled,reminder_minutes:reminderMinutes};
 }
 function readSettings(file) {
   if (!fs.existsSync(file)) return {settings: defaults(), warning: ''};

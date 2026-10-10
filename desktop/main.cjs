@@ -15,6 +15,10 @@ const {createOllamaStarter}=require('./ollama.cjs');
 const ensureOllama=createOllamaStarter();
 const {parseCalendarCommand,CalendarError}=require('./calendar.cjs');
 const {GoogleCalendar}=require('./google-calendar.cjs');
+const {WeatherService,WeatherError,searchLocations,parseWeatherCommand}=require('./weather.cjs');
+const weather=new WeatherService();
+const {Reminders}=require('./reminders.cjs');
+let reminders,reminderPoll,reminderRows=[],reminderToast;
 
 const root = path.resolve(__dirname, '..');
 const smoke = process.argv.includes('--smoke-test') || process.argv.includes('--hold-test');
@@ -29,6 +33,7 @@ let restartQueue=Promise.resolve(), recoveryAttempt=0;
 let response, responseAudio, questionInput, inputResult='', transcript='', detectedAt = 0;
 let answerCycle, answer='', answerNotice='', manualAnswer=null;
 let calendar,calendarCycle;
+let weatherCycle,weatherCandidates=[],weatherSearch=null;
 let speechAudio, speechRun=null, speechNotice='', speechStarted=0;
 let timerAudio,alarmRun=null,pendingAlarm=null,timerPoll,rendererReady=false,timerNotice='',timerNotification,timerAlarmStarted=0;
 let nextAlarmAt=0;
@@ -54,6 +59,7 @@ labels.PREPARING_INPUT='マイクを準備しています';
 labels.TRANSCRIBING='文字に変換しています';
 labels.THINKING='AIが回答を考えています';
 labels.CALENDAR='Googleカレンダーの予定を確認しています';
+labels.WEATHER='天気予報を確認しています';
 labels.SPEAKING='回答を読み上げています';
 labels.TIMER_ALERT='タイマーの終了をお知らせしています';
 function allowed() { return settings.monitoring_enabled && !locked && !sleeping && !quitting; }
@@ -64,7 +70,7 @@ const recovery=new Recovery({allowed,attempt:valid=>restart(valid),status:(next,
   setState(next==='INACTIVE'?(locked||sleeping?'SUSPENDED':'PAUSED'):next);
 }});
 function fault(e) {cancelResponse();epoch=null;++revision;recovery.fail(e);}
-function snapshot() { return {state, label:labels[state], calendar:calendar?.snapshot(),timer:timerService.snapshot(),timerNotice,timerSoundPending:pendingAlarm!==null,inputResult, transcript, answer, answerNotice, speechNotice, conversation:conversation.context(), conversationVersion:conversation.version, historyTrimmed:conversation.trimmed, aiModel:MODEL, error, devices, settings, count, lastDetection, recoveryAttempt, startupAvailable:app.isPackaged&&!smoke, ready:!!client?.ready}; }
+function snapshot() { return {reminderRows,reminderStatus:reminders?.notice??'',state, label:labels[state], weatherCandidates,calendar:calendar?.snapshot(),timer:timerService.snapshot(),timerNotice,timerSoundPending:pendingAlarm!==null,inputResult, transcript, answer, answerNotice, speechNotice, conversation:conversation.context(), conversationVersion:conversation.version, historyTrimmed:conversation.trimmed, aiModel:MODEL, error, devices, settings, count, lastDetection, recoveryAttempt, startupAvailable:app.isPackaged&&!smoke, ready:!!client?.ready}; }
 function log(type, data) {
   try {
     const dir = path.join(app.getPath('userData'), 'logs'); fs.mkdirSync(dir, {recursive:true});
@@ -128,7 +134,7 @@ function timerCommand(command) {
 function cancelResponse() {
   cancelAlarm();
   const run=speechRun;speechRun=null;run?.finishWait?.();speechAudio?.cancel();
-  response?.cancel(); responseAudio?.cancel(); questionInput?.cancel(); answerCycle?.cancel();calendarCycle?.cancel(); manualAnswer=null;
+  response?.cancel(); responseAudio?.cancel(); questionInput?.cancel(); answerCycle?.cancel();calendarCycle?.cancel();weatherCycle?.cancel(); manualAnswer=null;
 }
 async function readAnswer(text=answer) {
   speechNotice='';
@@ -153,6 +159,8 @@ async function generateAndSpeak(question,{voice=false}={}) {
   if(command) {answer=timerCommand(command);answerNotice='';inputResult='タイマー操作を受け付けました。';publish();await readAnswer();return;}
   const calendarKind=parseCalendarCommand(question);
   if(calendarKind) {if(await calendarCycle.begin(calendarKind))await readAnswer();return;}
+  const weatherCommand=parseWeatherCommand(question);
+  if(weatherCommand){if(await weatherCycle.begin(weatherCommand))await readAnswer();return;}
   if(await answerCycle.begin(question))await readAnswer();
 }
 async function answerFromText(question) {
@@ -231,6 +239,26 @@ async function restartNow(valid) {
   error='';if(allowed())recovery.healthy();publish();
 }
 let calendarSettingsBusy=false;
+async function weatherAction(name,value) {
+  if(quitting||locked||sleeping)return {ok:false,error:'画面を利用できる状態で操作してください。'};
+  if(name==='weather-source'){await shell.openExternal('https://open-meteo.com/');return {ok:true};}
+  if(!['PAUSED','LISTENING','ERROR'].includes(state)||manualAnswer)return {ok:false,error:'現在の入力・回答が終わってから地域を変更してください。'};
+  try {
+    if(name==='weather-search') {
+      weatherSearch?.abort();const controller=new AbortController();weatherSearch=controller;weatherCandidates=[];publish();
+      try {
+        const results=await searchLocations(value,{signal:controller.signal});
+        if(weatherSearch!==controller||locked||sleeping||quitting)return {ok:false,error:'地域検索を取り消しました。'};
+        weatherCandidates=results;publish();return results.length?{ok:true}:{ok:false,error:'地域が見つかりません。市区町村名やローマ字表記で検索してください。'};
+      }finally{if(weatherSearch===controller)weatherSearch=null;}
+    } else if(name==='weather-select'||name==='weather-clear') {
+      const location=name==='weather-clear'?null:weatherCandidates.find(row=>row.id===value);
+      if(location===undefined)return {ok:false,error:'検索結果から地域を選択してください。'};
+      const next={...settings,weather_location:location};saveSettings(settingsFile,next);settings=next;weather.clear();weatherCandidates=[];clearDisplayed();publish();return {ok:true};
+    }
+    return {ok:false,error:'不明な天気の操作です。'};
+  }catch(e){return {ok:false,error:e instanceof WeatherError?e.message:'地域の検索・保存を完了できませんでした。'};}
+}
 async function calendarAction(name) {
   if(!calendar||quitting||locked||sleeping)return {ok:false,error:'画面を利用できる状態で操作してください。'};
   if(name==='calendar-cancel'){calendar.cancel();return {ok:true};}
@@ -254,11 +282,13 @@ async function calendarAction(name) {
   finally{calendarSettingsBusy=false;}
 }
 function act(name, value) {
+  if(name==='reminder-dismiss'){reminderRows=[];reminderToast?.close();publish();return Promise.resolve({ok:true});}
+  if(typeof name==='string'&&name.startsWith('weather-'))return weatherAction(name,value);
   if(typeof name==='string'&&name.startsWith('calendar-'))return calendarAction(name);
   if(name==='new-conversation') {cancelResponse();clearConversation();epoch=null;++revision;}
   const stoppingSpeech=name==='stop-speech' && !!speechRun;
   if(stoppingSpeech) cancelResponse();
-  const cancelling=name==='cancel-input' && !!(response?.current || answerCycle?.current || calendarCycle?.current || manualAnswer);
+  const cancelling=name==='cancel-input' && !!(response?.current || answerCycle?.current || calendarCycle?.current || weatherCycle?.current || manualAnswer);
   if(cancelling) cancelResponse();
   // Stop intent takes effect immediately, including during an in-flight resume.
   if (name === 'toggle' && value === false) { settings.monitoring_enabled = false; epoch = null; ++revision; cancelResponse(); recovery.cancel(); }
@@ -325,6 +355,9 @@ function act(name, value) {
       try {setLogin(app,value);saveSettings(settingsFile,{...settings,auto_start:value});}
       catch(e) {try{setLogin(app,previous);}catch{}throw e;}
       settings={...settings,auto_start:value};
+    } else if (name === 'reminders-enabled'||name === 'reminder-minutes') {
+      const next={...settings,[name==='reminders-enabled'?'reminders_enabled':'reminder_minutes']:value};
+      saveSettings(settingsFile,next);settings=next;reminders.reset();reminderRows=[];reminderToast?.close();
     } else if (name === 'volume') {
       if (!Number.isFinite(value) || value < 0 || value > 1) throw Error('Invalid volume');
       const next={...settings,response_volume:value}; saveSettings(settingsFile,next); settings=next;
@@ -346,6 +379,8 @@ function act(name, value) {
   return operation;
 }
 function suspend() {
+  reminders?.reset();reminderRows=[];reminderToast?.close();
+  weatherSearch?.abort();weatherSearch=null;weatherCandidates=[];
   if(locked||sleeping)calendar?.cancel();
   clearConversation();
   recovery.cancel();cancelResponse();epoch=null;++revision;
@@ -360,12 +395,26 @@ else {
   app.on('window-all-closed', () => {});
   app.on('before-quit', event => {
     if (quitting) return;
-    event.preventDefault(); quitting = true;calendar?.cancel();clearInterval(timerPoll);timerNotification?.close();epoch = null; ++revision; recovery.cancel();cancelResponse();clearConversation(); setState('STOPPING');
+    event.preventDefault(); quitting = true;clearInterval(reminderPoll);reminders?.reset();reminderToast?.close();weatherSearch?.abort();calendar?.cancel();clearInterval(timerPoll);timerNotification?.close();epoch = null; ++revision; recovery.cancel();cancelResponse();clearConversation(); setState('STOPPING');
     Promise.resolve(client?.stop()).finally(() => app.exit(0));
   });
   app.whenReady().then(async () => {
-    calendar=new GoogleCalendar({file:path.join(app.getPath('userData'),'google-calendar.enc'),safeStorage,openExternal:url=>shell.openExternal(url),onChange:publish});
+    weatherCycle=new AnswerCycle({timeoutMs:20000,timeoutMessage:'天気の取得が時間内に完了しませんでした。再試行してください。',
+      ask:(command,options)=>weather.ask(command,settings.weather_location,options),
+      started:()=>{answer='';answerNotice='';speechNotice='';inputResult='';setState('WEATHER');},
+      complete:result=>{answer=result.text;answerNotice='';inputResult='天気予報を取得しました。';publish();},
+      failed:message=>{answerNotice=message;inputResult='天気を取得できませんでした。';publish();}
+    });
+    calendar=new GoogleCalendar({file:path.join(app.getPath('userData'),'google-calendar.enc'),safeStorage,openExternal:url=>shell.openExternal(url),onChange:()=>{reminders?.reset();reminderRows=[];reminderToast?.close();publish();}});
     calendar.load();
+    const reminderFile=path.join(app.getPath('userData'),'reminder-seen.json');
+    let seen={};try{const saved=JSON.parse(fs.readFileSync(reminderFile,'utf8'));seen=Object.fromEntries(Object.entries(saved).filter(([k,v])=>/^[a-f0-9]{64}$/.test(k)&&Number.isFinite(v)));}catch{}
+    reminders=new Reminders({seen,fetch:signal=>calendar.ask(null,{signal,raw:true}),onChange:publish,
+      save:next=>{fs.writeFileSync(reminderFile+'.tmp',JSON.stringify(next));fs.renameSync(reminderFile+'.tmp',reminderFile);},
+      notify:rows=>{
+        reminderRows=rows;win?.showInactive();win?.flashFrame(true);
+        if(Notification.isSupported()&&!smoke){try{reminderToast?.close();reminderToast=new Notification({title:'JARVIS — まもなく予定があります',body:'予定の開始が近づいています。JARVISで確認してください。',silent:true});reminderToast.on('click',()=>{if(!locked&&!sleeping)show();});reminderToast.show();}catch{}}
+      }});
     calendarCycle=new AnswerCycle({timeoutMs:60000,timeoutMessage:'予定の取得が時間内に完了しませんでした。再試行してください。',
       ask:(kind,options)=>calendar.ask(kind,options),
       started:()=>{answer='';answerNotice='';speechNotice='';inputResult='';setState('CALENDAR');},
@@ -471,6 +520,7 @@ else {
     }
     publish();
     await win.loadFile(path.join(root, 'ui-dist', 'index.html'));
+    if(!smoke)reminderPoll=setInterval(()=>{void reminders.tick({enabled:settings.reminders_enabled,minutes:settings.reminder_minutes,connected:calendar.snapshot().connected,available:!locked&&!sleeping&&!quitting,idle:['PAUSED','LISTENING'].includes(state)&&!manualAnswer&&!pendingAlarm&&!alarmRun});},1000);
     rendererReady=true;timerPoll=setInterval(()=>{timerService.tick();void deliverTimerAlarm();},250);
     try { await restart(); } catch(e) { fault(e); }
     if (smoke) {
@@ -478,6 +528,63 @@ else {
       assert.equal(state, 'PAUSED', error);
       assert.ok(devices.length > 0);
       const result = {state, devices:devices.length, error, workerPid:client?.child?.pid};
+      if(process.argv.includes('--reminder-test')) {
+        const originalSettings=settings;
+        const js=code=>win.webContents.executeJavaScript(code);
+        assert.equal(await js("document.getElementById('microphone').getClientRects().length"),0);
+        await js("document.getElementById('settings-toggle').click()");await new Promise(r=>setTimeout(r,100));
+        assert.ok(await js("document.getElementById('microphone').getClientRects().length>0"));
+        await js("document.getElementById('settings-calendar').click()");await new Promise(r=>setTimeout(r,100));
+        await act('reminders-enabled',true);await act('reminder-minutes',15);
+        assert.equal(JSON.parse(fs.readFileSync(settingsFile,'utf8')).reminder_minutes,15);
+        win.showInactive();await new Promise(r=>setTimeout(r,200));
+        fs.writeFileSync(path.join(app.getPath('userData'),'settings-preview.png'),(await win.webContents.capturePage()).toPNG());
+        const originalFetch=reminders.fetch,originalSave=reminders.save;reminders.seen={};reminders.save=()=>{};
+        reminders.fetch=async()=>[{id:'synthetic-reminder',summary:'通知検証用会議',start:{dateTime:new Date(Date.now()+300000).toISOString()}}];
+        const options={enabled:true,minutes:15,connected:true,available:true,idle:true};
+        timerService.start(60000);const timerId=timerService.current.id;
+        await reminders.tick(options);await reminders.tick({...options,idle:false});assert.equal(reminderRows.length,0);
+        await reminders.tick(options);assert.equal(reminderRows.length,1);assert.equal(timerService.current.id,timerId);assert.equal(state,'PAUSED');assert.equal(conversation.messages.length,0);
+        await js("document.getElementById('settings-toggle').click()");await new Promise(r=>setTimeout(r,200));
+        fs.writeFileSync(path.join(app.getPath('userData'),'home-preview.png'),(await win.webContents.capturePage()).toPNG());
+        await act('reminder-dismiss');assert.equal(reminderRows.length,0);await reminders.tick(options);assert.equal(reminderRows.length,0);
+        reminders.reset();reminders.fetch=originalFetch;reminders.save=originalSave;stopTimer();settings=originalSettings;saveSettings(settingsFile,settings);publish();
+        assert.ok(!fs.readFileSync(path.join(app.getPath('userData'),'logs/desktop.jsonl'),'utf8').includes('通知検証用会議'));
+        result.remindersAndSettings=true;
+      }
+      if(process.argv.includes('--weather-test')) {
+        const until=async predicate=>{const end=Date.now()+12000;while(!predicate()&&Date.now()<end)await new Promise(r=>setTimeout(r,20));assert.ok(predicate(),'Weather integration wait failed');};
+        const originalAsk=answerCycle.options.ask,originalRequest=weather.request,originalSettings=settings;
+        answerCycle.options.ask=()=>assert.fail('Weather must not use Ollama');
+        settings={...settings,speech_enabled:false,weather_location:null};
+        await act('ask-text','今日の天気');await until(()=>state==='PAUSED'&&!manualAnswer);
+        assert.match(answerNotice,/未設定/);result.weatherUnset=true;
+        weatherCandidates=[{id:1853909,name:'天気検証地域',admin:'大阪府',country:'JP',latitude:34.69,longitude:135.5}];
+        assert.ok((await act('weather-select',1853909)).ok);
+        assert.equal(JSON.parse(fs.readFileSync(settingsFile,'utf8')).weather_location.id,1853909);
+        const dates=Array.from({length:7},(_,i)=>new Date(Date.now()+9*3600000+i*86400000).toISOString().slice(0,10));
+        const fixture={daily:{time:dates,weather_code:Array(7).fill(61),temperature_2m_max:Array(7).fill(25),temperature_2m_min:Array(7).fill(18),precipitation_probability_max:Array(7).fill(80)},current:{time:dates[0]+'T12:00',weather_code:61,temperature_2m:22,apparent_temperature:23,wind_speed_10m:2}};
+        weather.request=async()=>fixture;
+        for(const question of ['今日の天気','明日の雨','明後日の気温','今週の天気','現在の天気','傘は必要']) {
+          await act('ask-text',question);await until(()=>state==='PAUSED'&&!manualAnswer);
+          assert.match(answer,/天気検証地域/);assert.match(answer,/Open-Meteo/);assert.equal(conversation.messages.length,0);
+        }
+        result.weatherPeriods=true;
+        win.showInactive();await win.webContents.executeJavaScript("document.getElementById('settings-toggle').click();document.getElementById('settings-weather').click();document.getElementById('weather-settings').scrollIntoView({block:'center'})");
+        await new Promise(r=>setTimeout(r,300));
+        fs.writeFileSync(path.join(app.getPath('userData'),'weather-preview.png'),(await win.webContents.capturePage()).toPNG());win.hide();
+        weather.clear();let release;weather.request=()=>new Promise(resolve=>release=resolve);
+        timerService.start(60000);const timerId=timerService.current.id;
+        await act('ask-text','今日の天気');await until(()=>state==='WEATHER'&&!!release);
+        await act('cancel-input');release(fixture);await new Promise(r=>setTimeout(r,100));
+        assert.equal(state,'PAUSED');assert.equal(answer,'');assert.equal(timerService.current.id,timerId);assert.equal(weather.cache,null);
+        result.weatherCancelAndTimer=true;stopTimer();
+        weather.request=async()=>{throw new WeatherError('天気サービスに接続できません。');};
+        await act('ask-text','今日の天気');await until(()=>state==='PAUSED'&&!manualAnswer);assert.match(answerNotice,/接続できません/);
+        assert.ok((await act('weather-clear')).ok);assert.equal(settings.weather_location,null);result.weatherFailureAndClear=true;
+        assert.ok(!fs.readFileSync(path.join(app.getPath('userData'),'logs/desktop.jsonl'),'utf8').includes('天気検証地域'));result.weatherPrivate=true;
+        settings=originalSettings;saveSettings(settingsFile,settings);weather.request=originalRequest;answerCycle.options.ask=originalAsk;weather.clear();publish();
+      }
       if(process.argv.includes('--calendar-test')) {
         const until=async predicate=>{const end=Date.now()+12000;while(!predicate()&&Date.now()<end)await new Promise(r=>setTimeout(r,20));assert.ok(predicate(),'Calendar integration wait failed');};
         const originalAsk=answerCycle.options.ask,originalRequest=calendar.request;
@@ -494,9 +601,9 @@ else {
         }
         result.calendarPeriods=true;
         result.extendedCalendarPeriods=true;
-        assert.ok(await win.webContents.executeJavaScript("document.body.innerText.includes('Googleカレンダー') && document.body.innerText.includes('カレンダー検証用会議')"));
+        assert.ok(await win.webContents.executeJavaScript("document.body.innerText.includes('カレンダー検証用会議')"));
         win.showInactive();
-        await win.webContents.executeJavaScript("document.getElementById('calendar-settings').scrollIntoView({block:'center'})");
+        await win.webContents.executeJavaScript("document.getElementById('settings-toggle').click();document.getElementById('settings-calendar').click();document.getElementById('calendar-settings').scrollIntoView({block:'center'})");
         await new Promise(r=>setTimeout(r,300));
         fs.writeFileSync(path.join(app.getPath('userData'),'calendar-preview.png'),(await win.webContents.capturePage()).toPNG());
         win.hide();
